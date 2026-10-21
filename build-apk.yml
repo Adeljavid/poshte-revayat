@@ -1,0 +1,79 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+    paths-ignore:
+      - "**.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # Works in two layouts: project files directly in the repo root,
+      # or only the project ZIP uploaded to the repo root (no folders needed).
+      - name: Locate Android project
+        id: locate
+        run: |
+          set -e
+          if [ -f settings.gradle ] && [ -d app ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          zip_file="poshte-revayat-android-project.zip"
+          if [ ! -f "$zip_file" ]; then
+            zip_file="$(ls -1 *.zip 2>/dev/null | head -n 1 || true)"
+          fi
+          if [ -z "$zip_file" ] || [ ! -f "$zip_file" ]; then
+            echo "No Android project found. Upload the project ZIP to the repo root." >&2
+            exit 1
+          fi
+          mkdir -p android-build
+          unzip -oq "$zip_file" -d android-build
+          settings="$(find android-build -name settings.gradle | head -n 1)"
+          if [ -z "$settings" ]; then
+            echo "settings.gradle not found inside the ZIP." >&2
+            exit 1
+          fi
+          echo "dir=$(dirname "$settings")" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: poshte-revayat-debug-apk
+          path: ${{ steps.locate.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
